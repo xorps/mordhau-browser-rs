@@ -86,11 +86,13 @@ fn ui() -> impl druid::Widget<State> {
 }
 
 #[tokio::main(threaded_scheduler)]
-async fn main() -> Result<(), druid::PlatformError> {
-    use druid::{AppLauncher, WindowDesc, LocalizedString, im::vector};
-    let app = AppLauncher::with_window(WindowDesc::new(ui).title(LocalizedString::new("Mordhau Browser")));
-    let delegate = Delegate { sink: app.get_external_handle(), task: None };
-    app.delegate(delegate)
-        .use_simple_logger()
-        .launch(State { servers: vector![], loading: false })
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    Ok(spawn_blocking(move || {
+        use druid::{AppLauncher, WindowDesc, LocalizedString, im::vector};
+        let app = AppLauncher::with_window(WindowDesc::new(ui).title(LocalizedString::new("Mordhau Browser")));
+        let delegate = Delegate { sink: app.get_external_handle(), task: None };
+        app.delegate(delegate)
+            .use_simple_logger()
+            .launch(State { servers: vector![], loading: false })
+    }).await??)
 }
