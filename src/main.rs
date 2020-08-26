@@ -2,7 +2,7 @@ mod stream;
 mod server;
 mod timed_udp;
 
-use tokio::task::spawn;
+use tokio::task::{spawn, spawn_blocking};
 use tokio::task::JoinHandle;
 
 const GET_SERVERS: druid::Selector<()> = druid::Selector::new("GET_SERVERS");
@@ -21,9 +21,11 @@ struct Delegate {
     task: Option<JoinHandle<()>>,
 }
 
-pub fn send_server(sink: &druid::ExtEventSink, payload: server::ServerInfo) {
-    let payload = payload.name;
-    sink.submit_command(RECEIVE_SERVER, payload, druid::Target::Global).unwrap();
+pub fn send_server(sink: druid::ExtEventSink, payload: server::ServerInfo) -> JoinHandle<()> {
+    spawn_blocking(move || {
+        let payload = payload.name;
+        sink.submit_command(RECEIVE_SERVER, payload, druid::Target::Global).unwrap();
+    })
 }
 
 fn get_servers(sink: druid::ExtEventSink) -> JoinHandle<()> {
@@ -31,7 +33,9 @@ fn get_servers(sink: druid::ExtEventSink) -> JoinHandle<()> {
         // TODO: error handling
         stream::query_master(sink.clone()).await.unwrap();
         // send stop/kill signal
-        sink.submit_command(STOP_SERVERS, (), druid::Target::Global).unwrap();
+        let _ = spawn_blocking(move || {
+            sink.submit_command(STOP_SERVERS, (), druid::Target::Global).unwrap();
+        }).await;
     })
 }
 
@@ -49,7 +53,9 @@ impl druid::AppDelegate<State> for Delegate {
             spawn(async move {
                 // handle.cancel().await;
                 let _ = handle.await;
-                sink.submit_command(STOPPED, (), druid::Target::Global).unwrap();
+                let _ = spawn_blocking(move || { 
+                    sink.submit_command(STOPPED, (), druid::Target::Global).unwrap();
+                }).await;
             });
         } else if cmd.is(STOPPED) {
             println!("Total Servers: {}", state.servers.len());
@@ -79,7 +85,7 @@ fn ui() -> impl druid::Widget<State> {
     root.padding(10.0)
 }
 
-#[tokio::main]
+#[tokio::main(threaded_scheduler)]
 async fn main() -> Result<(), druid::PlatformError> {
     use druid::{AppLauncher, WindowDesc, LocalizedString, im::vector};
     let app = AppLauncher::with_window(WindowDesc::new(ui).title(LocalizedString::new("Mordhau Browser")));

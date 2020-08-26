@@ -89,7 +89,7 @@ pub async fn query_master(sink: druid::ExtEventSink) -> std::io::Result<()> {
             let sink = sink.clone();
             let task = spawn(async move {
                 match server::query(ip).await {
-                    Ok(info) => send_server(&sink, info),
+                    Ok(info) => { let _ = send_server(sink, info).await; () },
                     Err(_) => (),
                 }
             });
