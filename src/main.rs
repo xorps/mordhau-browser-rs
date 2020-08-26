@@ -2,12 +2,11 @@ mod stream;
 mod server;
 mod timed_udp;
 
-use tokio::task::{spawn, spawn_blocking};
-use tokio::task::JoinHandle;
+use server::ServerInfo;
 
 const GET_SERVERS: druid::Selector<()> = druid::Selector::new("GET_SERVERS");
 const STOP_SERVERS: druid::Selector<()> = druid::Selector::new("STOP_SERVERS");
-const RECEIVE_SERVER: druid::Selector<String> = druid::Selector::new("RECEIVE_SERVER");
+const RECEIVE_SERVER: druid::Selector<ServerInfo> = druid::Selector::new("RECEIVE_SERVER");
 const STOPPED: druid::Selector<()> = druid::Selector::new("STOPPED");
 
 #[derive(Clone, druid::Data, druid::Lens)]
@@ -18,24 +17,42 @@ struct State {
 
 struct Delegate {
     sink: druid::ExtEventSink,
-    task: Option<JoinHandle<()>>,
+    task: Option<std::thread::JoinHandle<()>>,
 }
 
-pub fn send_server(sink: druid::ExtEventSink, payload: server::ServerInfo) -> JoinHandle<()> {
-    spawn_blocking(move || {
-        let payload = payload.name;
+pub fn send_server(sink: druid::ExtEventSink, payload: ServerInfo) -> tokio::task::JoinHandle<()> {
+    tokio::task::spawn_blocking(move || {
         sink.submit_command(RECEIVE_SERVER, payload, druid::Target::Global).unwrap();
     })
 }
 
-fn get_servers(sink: druid::ExtEventSink) -> JoinHandle<()> {
-    spawn(async move {
-        // TODO: error handling
-        stream::query_master(sink.clone()).await.unwrap();
-        // send stop/kill signal
-        let _ = spawn_blocking(move || {
-            sink.submit_command(STOP_SERVERS, (), druid::Target::Global).unwrap();
-        }).await;
+pub fn send_kill(sink: druid::ExtEventSink) -> tokio::task::JoinHandle<()> {
+    tokio::task::spawn_blocking(move || {
+        sink.submit_command(STOP_SERVERS, (), druid::Target::Global).unwrap();
+    })
+}
+
+async fn receiver_task(sink: druid::ExtEventSink, mut receiver: tokio::sync::mpsc::UnboundedReceiver<server::ServerInfo>) {
+    while let Some(server) = receiver.recv().await {
+        send_server(sink.clone(), server);
+    }
+}
+
+fn get_servers(sink: druid::ExtEventSink) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut rt = tokio::runtime::Runtime::new().unwrap();
+        let _: std::io::Result<()> = rt.block_on(async move {
+            let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+            // TODO: proper error handling
+            let send_task = tokio::task::spawn(stream::query_master(sender));
+            let recv_task = tokio::task::spawn(receiver_task(sink.clone(), receiver));
+
+            send_task.await??;
+            recv_task.await?;
+            send_kill(sink.clone()).await?;
+
+            Ok(())
+        });
     })
 }
 
@@ -46,16 +63,13 @@ impl druid::AppDelegate<State> for Delegate {
             state.servers = druid::im::vector![];
             state.loading = true;
         } else if let Some(server) = cmd.get(RECEIVE_SERVER) {
-            state.servers.push_back(server.clone());
+            state.servers.push_back(server.name.clone());
         } else if cmd.is(STOP_SERVERS) && self.task.is_some() {
             let handle = self.task.take().unwrap();
             let sink = self.sink.clone();
-            spawn(async move {
-                // handle.cancel().await;
-                let _ = handle.await;
-                let _ = spawn_blocking(move || { 
-                    sink.submit_command(STOPPED, (), druid::Target::Global).unwrap();
-                }).await;
+            std::thread::spawn(move || {
+                let _ = handle.join();
+                sink.submit_command(STOPPED, (), druid::Target::Global).unwrap();
             });
         } else if cmd.is(STOPPED) {
             println!("Total Servers: {}", state.servers.len());
@@ -85,14 +99,11 @@ fn ui() -> impl druid::Widget<State> {
     root.padding(10.0)
 }
 
-#[tokio::main(threaded_scheduler)]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    Ok(spawn_blocking(move || {
-        use druid::{AppLauncher, WindowDesc, LocalizedString, im::vector};
-        let app = AppLauncher::with_window(WindowDesc::new(ui).title(LocalizedString::new("Mordhau Browser")));
-        let delegate = Delegate { sink: app.get_external_handle(), task: None };
-        app.delegate(delegate)
-            .use_simple_logger()
-            .launch(State { servers: vector![], loading: false })
-    }).await??)
+fn main() -> Result<(), druid::PlatformError> {
+    use druid::{AppLauncher, WindowDesc, LocalizedString, im::vector};
+    let app = AppLauncher::with_window(WindowDesc::new(ui).title(LocalizedString::new("Mordhau Browser")));
+    let delegate = Delegate { sink: app.get_external_handle(), task: None };
+    app.delegate(delegate)
+        .use_simple_logger()
+        .launch(State { servers: vector![], loading: false })
 }

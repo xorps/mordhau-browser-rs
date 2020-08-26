@@ -81,21 +81,18 @@ fn master_stream() -> impl Stream<Item = std::io::Result<Vec<SocketAddrV4>>> {
     stream::try_unfold(QueryState::New, query_machine)
 }
 
-pub async fn query_master(sink: druid::ExtEventSink) -> std::io::Result<()> {
+pub async fn query_master(sender: tokio::sync::mpsc::UnboundedSender<ServerInfo>) -> std::io::Result<()> {
     let mut master = master_stream().boxed();
-    let mut tasks = Vec::new();
     while let Some(addr) = master.try_next().await? {
         for ip in addr.into_iter() {
-            let sink = sink.clone();
-            let task = spawn(async move {
+            let sender = sender.clone();
+            spawn(async move {
                 match server::query(ip).await {
-                    Ok(info) => { let _ = send_server(sink, info).await; () },
+                    Ok(info) => { let _ = sender.send(info); },
                     Err(_) => (),
                 }
             });
-            tasks.push(task);
         }
     }
-    join_all(tasks).await;
     Ok(())
 }
