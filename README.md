@@ -1,5 +1,8 @@
 # mordhau-browser-rs
 
-playing with druid and rust
-this is a server browser
-druid has or had major performance issues at the time of building this so the project was dropped.
+Playing with async rust with tokio and  with druid (a rust GUI library).
+
+This is a server browser for Mordhau.
+
+Druid had major performance issues at the time of this project so it was dropped.
+
